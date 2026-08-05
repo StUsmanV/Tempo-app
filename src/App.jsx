@@ -241,6 +241,8 @@ export default function CompasApp() {
   };
 
   // --- Guardar cambios en Supabase ---
+  const [saveError, setSaveError] = useState(null);
+
   useEffect(() => {
     if (!loaded || !data || !session) return;
     if (skipNextSaveRef.current) { skipNextSaveRef.current = false; return; }
@@ -248,18 +250,31 @@ export default function CompasApp() {
     saveTimer.current = setTimeout(async () => {
       try {
         if (role === "profesor") {
-          await supabase.from("teachers").update(teacherFieldsToRow(data)).eq("id", teacherId);
+          const { error: teacherErr } = await supabase.from("teachers").update(teacherFieldsToRow(data)).eq("id", teacherId);
+          if (teacherErr) throw teacherErr;
+
           const currentIds = data.students.map((s) => s.id);
           const removedIds = prevStudentIdsRef.current.filter((id) => !currentIds.includes(id));
-          if (removedIds.length) await supabase.from("students").delete().in("id", removedIds);
-          if (data.students.length) await supabase.from("students").upsert(data.students.map((s) => studentToRow(s, teacherId)));
+          if (removedIds.length) {
+            const { error: delErr } = await supabase.from("students").delete().in("id", removedIds);
+            if (delErr) throw delErr;
+          }
+          if (data.students.length) {
+            const { error: upsertErr } = await supabase.from("students").upsert(data.students.map((s) => studentToRow(s, teacherId)));
+            if (upsertErr) throw upsertErr;
+          }
           prevStudentIdsRef.current = currentIds;
         } else if (role === "estudiante" && myStudentRowId) {
           const mine = data.students.find((s) => s.id === myStudentRowId);
-          if (mine) await supabase.from("students").update(studentToRow(mine, teacherId)).eq("id", myStudentRowId);
+          if (mine) {
+            const { error: updErr } = await supabase.from("students").update(studentToRow(mine, teacherId)).eq("id", myStudentRowId);
+            if (updErr) throw updErr;
+          }
         }
+        setSaveError(null);
       } catch (e) {
         console.error("Error guardando en Supabase:", e);
+        setSaveError(e.message || "No se pudo guardar el cambio. Revisa tu conexión e inténtalo de nuevo.");
       }
     }, 500);
     return () => clearTimeout(saveTimer.current);
@@ -529,6 +544,16 @@ export default function CompasApp() {
         role={role}
         onLogout={() => supabase.auth.signOut()}
       />
+      {saveError && (
+        <div style={{ maxWidth: 880, margin: "0 auto 16px", padding: "0 20px" }}>
+          <div style={{ background: "var(--alert-bg)", border: "1px solid var(--coral)", borderRadius: 10, padding: "10px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, fontSize: 13, color: "var(--alert-text)" }}>
+            <span>⚠️ {saveError}</span>
+            <button className="cp-btn" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setData((d) => ({ ...d }))}>
+              Reintentar
+            </button>
+          </div>
+        </div>
+      )}
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "0 20px 60px" }}>
         {view === "profesor" ? (
           <ProfesorView
@@ -1317,12 +1342,19 @@ function Reportes({ data }) {
 function Cobro({ data, setQrCode, setPaymentInstructions, approvePaymentRequest, rejectPaymentRequest, setSelectedStudentId }) {
   const [open, setOpen] = useState(false);
   const [instructions, setInstructions] = useState(data.paymentInstructions || "");
+  const [qrError, setQrError] = useState("");
 
   const handleQrUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
-    const compressed = await fileToCompressedImage(file, 500, 0.8);
-    setQrCode(compressed);
+    setQrError("");
+    try {
+      const compressed = await fileToCompressedImage(file, 500, 0.8);
+      setQrCode(compressed);
+    } catch (err) {
+      console.error("Error subiendo QR:", err);
+      setQrError("No se pudo cargar esa imagen. Prueba con otra foto del QR.");
+    }
   };
 
   const pendientes = data.students.flatMap((s) =>
@@ -1354,6 +1386,7 @@ function Cobro({ data, setQrCode, setPaymentInstructions, approvePaymentRequest,
                 </div>
               )}
               <input type="file" accept="image/*" onChange={handleQrUpload} style={{ marginTop: 8, fontSize: 11 }} />
+              {qrError && <div style={{ fontSize: 11, color: "var(--coral)", marginTop: 6 }}>{qrError}</div>}
             </div>
             <div>
               <div className="cp-label" style={{ marginBottom: 6 }}>Instrucciones para el estudiante</div>
@@ -1894,18 +1927,47 @@ function RecargaCreditos({ data, student, submitPaymentRequest }) {
   const [packageId, setPackageId] = useState(student.packageId);
   const [receiptImage, setReceiptImage] = useState(null);
   const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
   const [sent, setSent] = useState(false);
 
   const pendiente = (student.paymentRequests || []).find((r) => r.status === "pendiente");
   const pkg = data.packages.find((p) => p.id === packageId);
 
+  const readFileAsDataURL = (file) =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error("No se pudo leer el archivo"));
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(file);
+    });
+
   const handleReceiptUpload = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
+    setUploadError("");
+    setReceiptImage(null);
+
+    if (file.size > 15 * 1024 * 1024) {
+      setUploadError("Esa foto pesa demasiado. Intenta con otra o toma la foto de nuevo con menos resolución.");
+      return;
+    }
+
     setUploading(true);
     try {
       const compressed = await fileToCompressedImage(file, 700, 0.7);
       setReceiptImage(compressed);
+    } catch (compressErr) {
+      // Si no se pudo procesar/comprimir (formato no compatible, etc.), intentamos usar el archivo tal cual
+      try {
+        if (file.size > 4 * 1024 * 1024) {
+          throw new Error("La foto es muy pesada para subirla sin comprimir.");
+        }
+        const raw = await readFileAsDataURL(file);
+        setReceiptImage(raw);
+      } catch (fallbackErr) {
+        console.error("Error subiendo comprobante:", compressErr, fallbackErr);
+        setUploadError("No se pudo cargar esta foto. Prueba tomar otra foto (evita capturas o formatos raros) e inténtalo de nuevo.");
+      }
     } finally {
       setUploading(false);
     }
@@ -1959,6 +2021,8 @@ function RecargaCreditos({ data, student, submitPaymentRequest }) {
               <div>
                 <div className="cp-label" style={{ marginBottom: 4 }}>Sube tu comprobante</div>
                 <input type="file" accept="image/*" onChange={handleReceiptUpload} style={{ fontSize: 11 }} />
+                {uploading && <div style={{ fontSize: 11, color: "var(--muted)", marginTop: 6 }}>Cargando foto…</div>}
+                {uploadError && <div style={{ fontSize: 11, color: "var(--coral)", marginTop: 6 }}>{uploadError}</div>}
                 {receiptImage && <img src={receiptImage} alt="Comprobante" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 8, marginTop: 8, border: "1px solid var(--line)" }} />}
               </div>
 
