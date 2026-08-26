@@ -115,6 +115,7 @@ function rowToTeacherFields(row) {
     paymentInstructions: row.payment_instructions || "",
     darkMode: row.dark_mode || false,
     subjects: row.subjects || [],
+    incomeLog: row.income_log || [],
     teacherProfile: { ...EMPTY_TEACHER_PROFILE, ...(row.teacher_profile || {}), social: { ...EMPTY_TEACHER_PROFILE.social, ...((row.teacher_profile || {}).social || {}) } },
   };
 }
@@ -127,6 +128,7 @@ function teacherFieldsToRow(data) {
     payment_instructions: data.paymentInstructions,
     dark_mode: data.darkMode,
     subjects: data.subjects,
+    income_log: data.incomeLog || [],
     teacher_profile: data.teacherProfile,
   };
 }
@@ -367,18 +369,27 @@ export default function CompasApp() {
     }));
   };
 
+  const logIncome = (d, studentId, studentName, amount, method) => ({
+    ...d,
+    incomeLog: [{ id: uid(), studentId, studentName, amount, method, date: new Date().toISOString().slice(0, 10) }, ...(d.incomeLog || [])],
+  });
+
   const rechargeStudent = (studentId, packageId) => {
     const pkg = data.packages.find((p) => p.id === packageId);
     const now = new Date();
     const expiry = new Date(now.getTime() + pkg.validityDays * 24 * 60 * 60 * 1000);
-    setData((d) => ({
-      ...d,
-      students: d.students.map((s) =>
-        s.id === studentId
-          ? { ...s, packageId, creditsRemaining: pkg.credits, creditsTotal: pkg.credits, expiry: expiry.toISOString().slice(0, 10) }
-          : s
-      ),
-    }));
+    setData((d) => {
+      const student = d.students.find((s) => s.id === studentId);
+      const withIncome = logIncome(d, studentId, student?.name || "", pkg.price, "manual");
+      return {
+        ...withIncome,
+        students: withIncome.students.map((s) =>
+          s.id === studentId
+            ? { ...s, packageId, creditsRemaining: pkg.credits, creditsTotal: pkg.credits, expiry: expiry.toISOString().slice(0, 10) }
+            : s
+        ),
+      };
+    });
   };
 
   const scheduleClass = (studentId, date, time) => {
@@ -401,7 +412,7 @@ export default function CompasApp() {
     }));
   };
 
-  const completeClass = (studentId, classId, feedback, tasks) => {
+  const completeClass = (studentId, classId, feedback, tasks, bitacora) => {
     setData((d) => ({
       ...d,
       students: d.students.map((s) => {
@@ -409,18 +420,18 @@ export default function CompasApp() {
         return {
           ...s,
           creditsRemaining: Math.max(0, s.creditsRemaining - 1),
-          classes: s.classes.map((c) => (c.id === classId ? { ...c, status: "completada", feedback, tasks } : c)),
+          classes: s.classes.map((c) => (c.id === classId ? { ...c, status: "completada", feedback, tasks, bitacora: bitacora || "" } : c)),
         };
       }),
     }));
   };
 
-  const updateClassFeedback = (studentId, classId, feedback, tasks) => {
+  const updateClassFeedback = (studentId, classId, feedback, tasks, bitacora) => {
     setData((d) => ({
       ...d,
       students: d.students.map((s) => {
         if (s.id !== studentId) return s;
-        return { ...s, classes: s.classes.map((c) => (c.id === classId ? { ...c, feedback, tasks } : c)) };
+        return { ...s, classes: s.classes.map((c) => (c.id === classId ? { ...c, feedback, tasks, bitacora: bitacora !== undefined ? bitacora : c.bitacora } : c)) };
       }),
     }));
   };
@@ -469,26 +480,31 @@ export default function CompasApp() {
   };
 
   const approvePaymentRequest = (studentId, requestId) => {
-    setData((d) => ({
-      ...d,
-      students: d.students.map((s) => {
-        if (s.id !== studentId) return s;
-        const request = (s.paymentRequests || []).find((r) => r.id === requestId);
-        if (!request) return s;
-        const pkg = d.packages.find((p) => p.id === request.packageId);
-        const now = new Date();
-        const expiry = pkg ? new Date(now.getTime() + pkg.validityDays * 24 * 60 * 60 * 1000) : new Date(s.expiry);
-        return {
-          ...s,
-          packageId: request.packageId,
-          creditsRemaining: pkg ? pkg.credits : s.creditsRemaining,
-          creditsTotal: pkg ? pkg.credits : s.creditsTotal,
-          expiry: expiry.toISOString().slice(0, 10),
-          pagoPendiente: false,
-          paymentRequests: s.paymentRequests.map((r) => (r.id === requestId ? { ...r, status: "aprobado" } : r)),
-        };
-      }),
-    }));
+    setData((d) => {
+      const student = d.students.find((s) => s.id === studentId);
+      const request = (student?.paymentRequests || []).find((r) => r.id === requestId);
+      const withIncome = request ? logIncome(d, studentId, student?.name || "", request.amount, "qr") : d;
+      return {
+        ...withIncome,
+        students: withIncome.students.map((s) => {
+          if (s.id !== studentId) return s;
+          const req = (s.paymentRequests || []).find((r) => r.id === requestId);
+          if (!req) return s;
+          const pkg = d.packages.find((p) => p.id === req.packageId);
+          const now = new Date();
+          const expiry = pkg ? new Date(now.getTime() + pkg.validityDays * 24 * 60 * 60 * 1000) : new Date(s.expiry);
+          return {
+            ...s,
+            packageId: req.packageId,
+            creditsRemaining: pkg ? pkg.credits : s.creditsRemaining,
+            creditsTotal: pkg ? pkg.credits : s.creditsTotal,
+            expiry: expiry.toISOString().slice(0, 10),
+            pagoPendiente: false,
+            paymentRequests: s.paymentRequests.map((r) => (r.id === requestId ? { ...r, status: "aprobado" } : r)),
+          };
+        }),
+      };
+    });
   };
 
   const rejectPaymentRequest = (studentId, requestId) => {
@@ -916,6 +932,7 @@ function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleRep
   const [completingKey, setCompletingKey] = useState(null);
   const [feedback, setFeedback] = useState("");
   const [tasks, setTasks] = useState("");
+  const [bitacora, setBitacora] = useState("");
   const [openMenuKey, setOpenMenuKey] = useState(null);
   const today = new Date().toISOString().slice(0, 10);
   const todayLabel = new Date().toLocaleDateString("es-CO", { weekday: "long", day: "numeric", month: "long" });
@@ -937,7 +954,15 @@ function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleRep
     };
   });
 
-  const itemProps = { completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId };
+  const lastBitacoraByStudent = {};
+  data.students.forEach((s) => {
+    const completadasConBitacora = s.classes
+      .filter((c) => c.status === "completada" && c.bitacora)
+      .sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+    if (completadasConBitacora[0]) lastBitacoraByStudent[s.id] = completadasConBitacora[0].bitacora;
+  });
+
+  const itemProps = { completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, bitacora, setBitacora, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId, lastBitacoraByStudent };
 
   return (
     <div className="cp-card" style={{ borderColor: "var(--brass)" }}>
@@ -983,7 +1008,7 @@ function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleRep
   );
 }
 
-function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId }) {
+function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, bitacora, setBitacora, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId, lastBitacoraByStudent }) {
   const key = c.id;
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
@@ -1041,13 +1066,19 @@ function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback,
       </div>
       {completingKey === key && (
         <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-          <textarea className="cp-input" placeholder="Retroalimentación de la clase" value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} />
+          {lastBitacoraByStudent?.[c.studentId] && (
+            <div style={{ fontSize: 11, color: "var(--muted)", background: "var(--soft-bg)", borderRadius: 8, padding: "6px 10px" }}>
+              <strong style={{ fontWeight: 600 }}>Última clase:</strong> {lastBitacoraByStudent[c.studentId]}
+            </div>
+          )}
+          <textarea className="cp-input" placeholder="Bitácora: ¿qué se vio en esta clase?" value={bitacora} onChange={(e) => setBitacora(e.target.value)} rows={2} />
+          <textarea className="cp-input" placeholder="Retroalimentación para el estudiante" value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} />
           <textarea className="cp-input" placeholder="Tareas para la próxima clase" value={tasks} onChange={(e) => setTasks(e.target.value)} rows={2} />
           <button
             className="cp-btn cp-btn-primary"
             onClick={() => {
-              completeClass(c.studentId, c.id, feedback, tasks);
-              setCompletingKey(null); setFeedback(""); setTasks("");
+              completeClass(c.studentId, c.id, feedback, tasks, bitacora);
+              setCompletingKey(null); setFeedback(""); setTasks(""); setBitacora("");
             }}
           >
             Guardar y descontar 1 crédito
@@ -1061,10 +1092,8 @@ function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback,
 function Analitica({ data }) {
   const allClasses = data.students.flatMap((s) => s.classes.map((c) => ({ ...c, student: s.name })));
   const completadas = allClasses.filter((c) => c.status === "completada");
-  const ingresoEstimado = data.students.reduce((sum, s) => {
-    const pkg = data.packages.find((p) => p.id === s.packageId);
-    return sum + (pkg ? pkg.price : 0);
-  }, 0);
+  const mesActual = new Date().toISOString().slice(0, 7);
+  const ingresoMesActual = (data.incomeLog || []).filter((r) => r.date.slice(0, 7) === mesActual).reduce((sum, r) => sum + r.amount, 0);
   const bajos = data.students.filter((s) => s.creditsRemaining <= 1).length;
 
   return (
@@ -1076,7 +1105,7 @@ function Analitica({ data }) {
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12 }}>
         <Metric label="Clases dictadas" value={completadas.length} />
         <Metric label="Estudiantes activos" value={data.students.length} />
-        <Metric label="Ingreso vigente estimado" value={formatCOP(ingresoEstimado)} />
+        <Metric label="Ingreso este mes" value={formatCOP(ingresoMesActual)} />
         <Metric label="Con créditos bajos" value={bajos} accent={bajos > 0 ? "var(--coral)" : undefined} />
       </div>
     </div>
@@ -1283,6 +1312,21 @@ function Reportes({ data }) {
   });
   const meses = Object.keys(porMes).sort().reverse();
 
+  // Balance de ingresos reales (recargas manuales + pagos QR aprobados) por mes
+  const ingresoPorMes = {};
+  (data.incomeLog || []).forEach((r) => {
+    const mes = r.date.slice(0, 7);
+    ingresoPorMes[mes] = (ingresoPorMes[mes] || 0) + r.amount;
+  });
+  const ultimos6Meses = Array.from({ length: 6 }).map((_, i) => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - i);
+    const key = d.toISOString().slice(0, 7);
+    return { key, label: d.toLocaleDateString("es-CO", { month: "long", year: "numeric" }), total: ingresoPorMes[key] || 0 };
+  });
+  const mesActualKey = new Date().toISOString().slice(0, 7);
+  const balanceMesActual = ingresoPorMes[mesActualKey] || 0;
+
   const porEstudiante = data.students.map((s) => {
     const pkg = data.packages.find((p) => p.id === s.packageId);
     const completadas = s.classes.filter((c) => c.status === "completada").length;
@@ -1305,6 +1349,22 @@ function Reportes({ data }) {
             <Download size={13} style={{ verticalAlign: -2, marginRight: 4 }} />
             Exportar CSV de clases dictadas
           </button>
+
+          <div>
+            <div className="cp-label" style={{ marginBottom: 8 }}>Balance del mes actual</div>
+            <div style={{ fontFamily: "var(--font-mono)", fontSize: 26, fontWeight: 600, color: "var(--sage)" }}>{formatCOP(balanceMesActual)}</div>
+            <div style={{ fontSize: 11, color: "var(--muted-light)", marginTop: 2 }}>Se reinicia en $0 el primero de cada mes.</div>
+          </div>
+
+          <div>
+            <div className="cp-label" style={{ marginBottom: 8 }}>Últimos 6 meses</div>
+            {ultimos6Meses.map((m) => (
+              <div key={m.key} style={{ display: "flex", justifyContent: "space-between", fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+                <span style={{ textTransform: "capitalize" }}>{m.label}</span>
+                <span style={{ color: m.total > 0 ? "var(--ink)" : "var(--muted-light)", fontWeight: 500 }}>{formatCOP(m.total)}</span>
+              </div>
+            ))}
+          </div>
 
           <div>
             <div className="cp-label" style={{ marginBottom: 8 }}>Por mes</div>
@@ -1618,13 +1678,16 @@ function StudentDetail({ student, packages, subjects, rechargeStudent, scheduleC
   const [completingId, setCompletingId] = useState(null);
   const [feedback, setFeedback] = useState("");
   const [tasks, setTasks] = useState("");
+  const [bitacora, setBitacora] = useState("");
   const [editingId, setEditingId] = useState(null);
   const [editFeedback, setEditFeedback] = useState("");
   const [editTasks, setEditTasks] = useState("");
+  const [editBitacora, setEditBitacora] = useState("");
   const [rechargePkg, setRechargePkg] = useState(student.packageId);
 
   const pendientes = student.classes.filter((c) => c.status === "programada").sort((a, b) => (a.date + a.time).localeCompare(b.date + b.time));
   const historial = student.classes.filter((c) => c.status === "completada" || c.status === "ausencia").sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+  const ultimaBitacora = historial.find((c) => c.bitacora)?.bitacora;
 
   return (
     <div className="cp-card" style={{ borderColor: "var(--brass)" }}>
@@ -1787,13 +1850,19 @@ function StudentDetail({ student, packages, subjects, rechargeStudent, scheduleC
                 </div>
                 {completingId === c.id && (
                   <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
-                    <textarea className="cp-input" placeholder="Retroalimentación" value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} />
+                    {ultimaBitacora && (
+                      <div style={{ fontSize: 11, color: "var(--muted)", background: "var(--soft-bg)", borderRadius: 8, padding: "6px 10px" }}>
+                        <strong style={{ fontWeight: 600 }}>Última clase:</strong> {ultimaBitacora}
+                      </div>
+                    )}
+                    <textarea className="cp-input" placeholder="Bitácora: ¿qué se vio en esta clase?" value={bitacora} onChange={(e) => setBitacora(e.target.value)} rows={2} />
+                    <textarea className="cp-input" placeholder="Retroalimentación para el estudiante" value={feedback} onChange={(e) => setFeedback(e.target.value)} rows={2} />
                     <textarea className="cp-input" placeholder="Tareas para la próxima clase" value={tasks} onChange={(e) => setTasks(e.target.value)} rows={2} />
                     <button
                       className="cp-btn cp-btn-primary"
                       onClick={() => {
-                        completeClass(student.id, c.id, feedback, tasks);
-                        setCompletingId(null); setFeedback(""); setTasks("");
+                        completeClass(student.id, c.id, feedback, tasks, bitacora);
+                        setCompletingId(null); setFeedback(""); setTasks(""); setBitacora("");
                       }}
                     >
                       Guardar y descontar 1 crédito
@@ -1825,25 +1894,27 @@ function StudentDetail({ student, packages, subjects, rechargeStudent, scheduleC
                   style={{ padding: "2px 8px", fontSize: 11 }}
                   onClick={() => {
                     if (editingId === c.id) { setEditingId(null); return; }
-                    setEditingId(c.id); setEditFeedback(c.feedback || ""); setEditTasks(c.tasks || "");
+                    setEditingId(c.id); setEditFeedback(c.feedback || ""); setEditTasks(c.tasks || ""); setEditBitacora(c.bitacora || "");
                   }}
                 >
-                  {c.feedback || c.tasks ? "Editar" : "Agregar retro"}
+                  {c.feedback || c.tasks || c.bitacora ? "Editar" : "Agregar retro"}
                 </button>
               </div>
               {editingId === c.id ? (
                 <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+                  <textarea className="cp-input" placeholder="Bitácora: ¿qué se vio en esta clase?" value={editBitacora} onChange={(e) => setEditBitacora(e.target.value)} rows={2} />
                   <textarea className="cp-input" placeholder="Retroalimentación" value={editFeedback} onChange={(e) => setEditFeedback(e.target.value)} rows={2} />
                   <textarea className="cp-input" placeholder="Tareas para la próxima clase" value={editTasks} onChange={(e) => setEditTasks(e.target.value)} rows={2} />
                   <button
                     className="cp-btn cp-btn-primary"
-                    onClick={() => { updateClassFeedback(student.id, c.id, editFeedback, editTasks); setEditingId(null); }}
+                    onClick={() => { updateClassFeedback(student.id, c.id, editFeedback, editTasks, editBitacora); setEditingId(null); }}
                   >
                     Guardar
                   </button>
                 </div>
               ) : (
                 <>
+                  {c.bitacora && <div style={{ marginTop: 4, color: "var(--text-soft)" }}><strong style={{ fontWeight: 500 }}>Bitácora:</strong> {c.bitacora}</div>}
                   {c.feedback && <div style={{ marginTop: 4, color: "var(--text-soft)" }}><strong style={{ fontWeight: 500 }}>Retro:</strong> {c.feedback}</div>}
                   {c.tasks && (
                     <div style={{ marginTop: 2, color: "var(--text-soft)", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
