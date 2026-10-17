@@ -1,5 +1,5 @@
-import React, { useState, useEffect, useRef } from "react";
-import { Music, Plus, Calendar, User, Wallet, ClipboardList, BarChart3, AlertTriangle, Check, X, RefreshCw, ChevronDown, ChevronRight, Trash2, MoreVertical, Sun, Moon, Download, MessageCircle, Repeat, LogOut } from "lucide-react";
+import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
+import { Music, Plus, Calendar, User, Wallet, ClipboardList, BarChart3, AlertTriangle, Check, X, RefreshCw, ChevronDown, ChevronRight, Trash2, MoreVertical, Sun, Moon, Download, MessageCircle, Repeat, LogOut, HelpCircle } from "lucide-react";
 import { supabase } from "./supabaseClient";
 import Auth from "./Auth";
 
@@ -244,6 +244,30 @@ export default function CompasApp() {
 
   // --- Guardar cambios en Supabase ---
   const [saveError, setSaveError] = useState(null);
+
+  // --- Recorrido guiado (se muestra solo la primera vez en cada cuenta) ---
+  const [tourOpen, setTourOpen] = useState(false);
+  const tourKey = session?.user?.id ? `tempo-tour-v1-${session.user.id}` : null;
+
+  useEffect(() => {
+    if (!loaded || !role || !tourKey) return;
+    let done = false;
+    try { done = localStorage.getItem(tourKey) === "1"; } catch (e) {}
+    if (done) return;
+    const t = setTimeout(() => setTourOpen(true), 900);
+    return () => clearTimeout(t);
+  }, [loaded, role, tourKey]);
+
+  const closeTour = () => {
+    setTourOpen(false);
+    try { if (tourKey) localStorage.setItem(tourKey, "1"); } catch (e) {}
+  };
+
+  const startTour = () => {
+    setView(role === "profesor" ? "profesor" : "estudiante");
+    window.scrollTo({ top: 0 });
+    setTimeout(() => setTourOpen(true), 150);
+  };
 
   useEffect(() => {
     if (!loaded || !data || !session) return;
@@ -559,6 +583,7 @@ export default function CompasApp() {
         exportBackup={exportBackup}
         role={role}
         onLogout={() => supabase.auth.signOut()}
+        onTour={startTour}
       />
       {saveError && (
         <div style={{ maxWidth: 880, margin: "0 auto 16px", padding: "0 20px" }}>
@@ -612,7 +637,139 @@ export default function CompasApp() {
           />
         )}
       </div>
+      {tourOpen && <Tour steps={role === "profesor" ? TEACHER_TOUR : STUDENT_TOUR} onClose={closeTour} />}
     </div>
+  );
+}
+
+const TEACHER_TOUR = [
+  { title: "¡Te damos la bienvenida a Tempo! 🎵", text: "Te muestro en un minuto dónde está cada cosa. Puedes salir cuando quieras y volver a verlo con el botón ? de arriba." },
+  { target: "mi-tempo", title: "Mi Tempo de hoy", text: "Tu resumen del día: clases, pagos pendientes, cumpleaños y acciones recomendadas. Es lo primero que ves al abrir la app." },
+  { target: "agenda", title: "Tu agenda", text: "Aquí ves las clases de hoy y de la semana. Con “Completar y agregar retro” se descuenta el crédito y dejas bitácora, retroalimentación y tareas. En los tres puntitos puedes cancelar, marcar ausencia o reprogramar." },
+  { target: "reportes", title: "Balance e ingresos", text: "Mira cuánto ingresas mes a mes (los últimos 6) y exporta tus clases en CSV. El balance del mes empieza en $0 cada día 1." },
+  { target: "perfil", title: "Tu perfil", text: "Completa tu reseña, contacto y redes, y agrega lo que enseñas (piano, flauta, teoría…). Tus estudiantes lo ven en “Conoce a tu profe”." },
+  { target: "paquetes", title: "Tus paquetes de crédito", text: "Por aquí subes los paquetes de tus clases, con su precio, créditos y vigencia. Los 4 que ves son solo una sugerencia: edítalos, bórralos o crea los tuyos." },
+  { target: "cobro", title: "Cobro con QR", text: "Sube tu QR e instrucciones de pago. Cuando un estudiante envíe su comprobante, aparece aquí para que lo apruebes y se recarguen sus créditos." },
+  { target: "estudiantes", title: "Tus estudiantes", text: "Agrégalos con su nombre y paquete; después ellos crean su cuenta y eligen su nombre en tu lista. Toca una tarjeta para agendar clases, ver su historial y llevar su perfil." },
+  { target: "vista-toggle", title: "Mira lo que ve tu estudiante", text: "Cambia a “Vista estudiante” para ver la app tal como la ve cada uno de tus estudiantes." },
+  { title: "¡Listo, a darle! 🎶", text: "Puedes repetir este recorrido cuando quieras con el botón ? de arriba." },
+];
+
+const STUDENT_TOUR = [
+  { title: "¡Te damos la bienvenida a Tempo! 🎵", text: "Un recorrido rápido para que sepas dónde está todo. Puedes repetirlo cuando quieras con el botón ? de arriba." },
+  { target: "mi-tempo", title: "Mi Tempo de hoy", text: "Tu resumen del día: tu clase, tu reto de práctica y recordatorios importantes." },
+  { target: "materia", title: "Tu clase", text: "Aquí eliges qué clase ves con tu profe." },
+  { target: "creditos", title: "Tus créditos", text: "Cada clase que ves gasta un crédito. Aquí ves cuántos te quedan y cuándo vence tu paquete." },
+  { target: "recarga", title: "Recargar créditos", text: "Cuando se te acaben, elige un paquete, paga con el QR de tu profe y sube la foto del comprobante. Tu profe lo revisa y se recargan." },
+  { target: "proximas", title: "Próximas clases", text: "Las clases que tu profe te ha agendado." },
+  { target: "retro", title: "Retroalimentación y tareas", text: "Después de cada clase, tu profe deja aquí sus comentarios y tus tareas." },
+  { target: "profe", title: "Conoce a tu profe", text: "Su trayectoria, contacto y redes sociales." },
+  { title: "¡Listo! 🎶", text: "Cualquier duda, repite este recorrido con el botón ? de arriba." },
+];
+
+function Tour({ steps: allSteps, onClose }) {
+  // Solo se muestran los pasos cuyo elemento existe en pantalla
+  const [steps] = useState(() => allSteps.filter((st) => !st.target || document.querySelector(`[data-tour="${st.target}"]`)));
+  const [idx, setIdx] = useState(0);
+  const [rect, setRect] = useState(null);
+  const [vp, setVp] = useState({ w: window.innerWidth, h: window.innerHeight });
+  const step = steps[idx];
+  const isLast = idx === steps.length - 1;
+
+  useLayoutEffect(() => {
+    const getEl = () => (step?.target ? document.querySelector(`[data-tour="${step.target}"]`) : null);
+    const measure = () => {
+      setVp({ w: window.innerWidth, h: window.innerHeight });
+      const el = getEl();
+      if (!el) { setRect(null); return; }
+      const r = el.getBoundingClientRect();
+      setRect({ top: r.top, left: r.left, width: r.width, height: r.height });
+    };
+    const el = getEl();
+    if (el) {
+      const tall = el.getBoundingClientRect().height > window.innerHeight * 0.6;
+      el.scrollIntoView({ behavior: "smooth", block: tall ? "start" : "center" });
+    }
+    measure();
+    const t1 = setTimeout(measure, 350);
+    const t2 = setTimeout(measure, 800);
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      clearTimeout(t1); clearTimeout(t2);
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [idx]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  if (!step) return null;
+
+  const W = Math.min(330, vp.w - 24);
+  const bubble = {
+    position: "fixed", width: W, zIndex: 1002, boxSizing: "border-box",
+    background: "var(--card)", color: "var(--ink)", border: "1px solid var(--line)",
+    borderRadius: 16, padding: "16px 18px", boxShadow: "0 12px 40px rgba(0,0,0,0.28)",
+  };
+  if (!rect) {
+    Object.assign(bubble, { top: "50%", left: "50%", transform: "translate(-50%, -50%)" });
+  } else {
+    const left = Math.max(12, Math.min(rect.left, vp.w - W - 12));
+    const spaceBelow = vp.h - (rect.top + rect.height);
+    if (spaceBelow >= 230) Object.assign(bubble, { top: rect.top + rect.height + 12, left });
+    else if (rect.top >= 230) Object.assign(bubble, { bottom: vp.h - rect.top + 12, left });
+    else Object.assign(bubble, { bottom: 12, left: (vp.w - W) / 2 });
+  }
+
+  return (
+    <>
+      {/* Capa transparente: evita tocar la app mientras dura el recorrido */}
+      <div style={{ position: "fixed", inset: 0, zIndex: 1000 }} />
+      {rect ? (
+        <div
+          style={{
+            position: "fixed", zIndex: 1001, pointerEvents: "none",
+            top: rect.top - 6, left: rect.left - 6, width: rect.width + 12, height: rect.height + 12,
+            borderRadius: 20, boxShadow: "0 0 0 9999px rgba(15, 28, 44, 0.62)",
+            border: "2px solid var(--brass)", transition: "all 0.25s ease",
+          }}
+        />
+      ) : (
+        <div style={{ position: "fixed", inset: 0, zIndex: 1001, background: "rgba(15, 28, 44, 0.62)", pointerEvents: "none" }} />
+      )}
+      <div style={bubble} role="dialog" aria-live="polite">
+        <div style={{ fontFamily: "var(--font-display)", fontSize: 17, fontWeight: 600, marginBottom: 6 }}>{step.title}</div>
+        <div style={{ fontSize: 13, lineHeight: 1.45, color: "var(--text-soft)", marginBottom: 14 }}>{step.text}</div>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+          <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            {steps.map((_, i) => (
+              <span key={i} style={{ width: i === idx ? 14 : 6, height: 6, borderRadius: 999, background: i === idx ? "var(--brass)" : "var(--line)", transition: "all 0.2s" }} />
+            ))}
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            {!isLast && (
+              <button className="cp-btn" style={{ padding: "6px 10px", fontSize: 12, border: "none", background: "transparent", color: "var(--muted)" }} onClick={onClose}>
+                Saltar
+              </button>
+            )}
+            {idx > 0 && (
+              <button className="cp-btn" style={{ padding: "6px 12px", fontSize: 12 }} onClick={() => setIdx(idx - 1)}>
+                Atrás
+              </button>
+            )}
+            <button className="cp-btn cp-btn-primary" style={{ padding: "6px 14px", fontSize: 12 }} onClick={() => (isLast ? onClose() : setIdx(idx + 1))}>
+              {isLast ? "¡Listo!" : "Siguiente"}
+            </button>
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: "var(--muted-light)", marginTop: 8 }}>{idx + 1} de {steps.length}</div>
+      </div>
+    </>
   );
 }
 
@@ -725,7 +882,7 @@ function Styles() {
   );
 }
 
-function Header({ teacherName, onNameChange, view, setView, darkMode, toggleDarkMode, exportBackup, role, onLogout }) {
+function Header({ teacherName, onNameChange, view, setView, darkMode, toggleDarkMode, exportBackup, role, onLogout, onTour }) {
   return (
     <div style={{ borderBottom: "1px solid var(--line)", marginBottom: 24 }}>
       <div style={{ maxWidth: 880, margin: "0 auto", padding: "24px 20px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
@@ -758,7 +915,7 @@ function Header({ teacherName, onNameChange, view, setView, darkMode, toggleDark
             </button>
           )}
           {role === "profesor" && (
-            <div style={{ display: "flex", gap: 6, background: "var(--soft-bg)", padding: 4, borderRadius: 999 }}>
+            <div data-tour="vista-toggle" style={{ display: "flex", gap: 6, background: "var(--soft-bg)", padding: 4, borderRadius: 999 }}>
               <div
                 className="cp-tab"
                 style={{ background: view === "profesor" ? "var(--brass-dark)" : "transparent", color: view === "profesor" ? "#fff" : "var(--ink)" }}
@@ -775,6 +932,9 @@ function Header({ teacherName, onNameChange, view, setView, darkMode, toggleDark
               </div>
             </div>
           )}
+          <button className="cp-btn" style={{ padding: "6px 8px" }} onClick={onTour} aria-label="Ver el recorrido guiado">
+            <HelpCircle size={14} />
+          </button>
           <button className="cp-btn" style={{ padding: "6px 8px" }} onClick={onLogout} aria-label="Cerrar sesión">
             <LogOut size={14} />
           </button>
@@ -790,41 +950,41 @@ function ProfesorView(props) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <MiTempoHoyProfesor data={data} setSelectedStudentId={setSelectedStudentId} />
-      <AgendaDiaria
+      <div data-tour="mi-tempo"><MiTempoHoyProfesor data={data} setSelectedStudentId={setSelectedStudentId} /></div>
+      <div data-tour="agenda"><AgendaDiaria
         data={data}
         completeClass={props.completeClass}
         cancelClass={props.cancelClass}
         markAbsence={props.markAbsence}
         toggleReprogramar={props.toggleReprogramar}
         setSelectedStudentId={setSelectedStudentId}
-      />
+      /></div>
       <Analitica data={data} />
-      <Reportes data={data} />
-      <PerfilProfesor
+      <div data-tour="reportes"><Reportes data={data} /></div>
+      <div data-tour="perfil"><PerfilProfesor
         data={data}
         updateTeacherProfile={props.updateTeacherProfile}
         updateTeacherSocial={props.updateTeacherSocial}
         addSubject={props.addSubject}
         removeSubject={props.removeSubject}
         onNameChange={props.setTeacherName}
-      />
-      <Paquetes packages={data.packages} updatePackage={props.updatePackage} addPackage={props.addPackage} removePackage={props.removePackage} />
-      <Cobro
+      /></div>
+      <div data-tour="paquetes"><Paquetes packages={data.packages} updatePackage={props.updatePackage} addPackage={props.addPackage} removePackage={props.removePackage} /></div>
+      <div data-tour="cobro"><Cobro
         data={data}
         setQrCode={props.setQrCode}
         setPaymentInstructions={props.setPaymentInstructions}
         approvePaymentRequest={props.approvePaymentRequest}
         rejectPaymentRequest={props.rejectPaymentRequest}
         setSelectedStudentId={setSelectedStudentId}
-      />
-      <Estudiantes
+      /></div>
+      <div data-tour="estudiantes"><Estudiantes
         data={data}
         addStudent={props.addStudent}
         selectedStudentId={selectedStudentId}
         setSelectedStudentId={setSelectedStudentId}
         removeStudent={props.removeStudent}
-      />
+      /></div>
       {selected && (
         <StudentDetail
           student={selected}
@@ -2133,10 +2293,10 @@ function EstudianteView({ data, studentPortalId, setStudentPortalId, submitPayme
       )}
       {student && (
         <>
-          <MiTempoHoyEstudiante student={student} />
+          <div data-tour="mi-tempo"><MiTempoHoyEstudiante student={student} /></div>
 
           {(data.subjects || []).length > 0 && (
-            <div className="cp-card">
+            <div className="cp-card" data-tour="materia">
               <div className="cp-label" style={{ marginBottom: 6 }}>¿Qué clase ves con tu profe?</div>
               <select
                 className="cp-select"
@@ -2156,15 +2316,15 @@ function EstudianteView({ data, studentPortalId, setStudentPortalId, submitPayme
             </div>
           )}
 
-          <div className="cp-card">
+          <div className="cp-card" data-tour="creditos">
             <div style={{ fontFamily: "var(--font-display)", fontSize: 18, fontWeight: 600, marginBottom: 4 }}>{pkg?.name}</div>
             <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 14 }}>Vence: {student.expiry}</div>
             <TicketPunch total={student.creditsTotal} remaining={student.creditsRemaining} />
           </div>
 
-          <RecargaCreditos data={data} student={student} submitPaymentRequest={submitPaymentRequest} />
+          <div data-tour="recarga"><RecargaCreditos data={data} student={student} submitPaymentRequest={submitPaymentRequest} /></div>
 
-          <div className="cp-card">
+          <div className="cp-card" data-tour="proximas">
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
               <Calendar size={14} color="var(--sage)" />
               <span style={{ fontSize: 13, fontWeight: 500 }}>Próximas clases</span>
@@ -2178,7 +2338,7 @@ function EstudianteView({ data, studentPortalId, setStudentPortalId, submitPayme
             )}
           </div>
 
-          <div className="cp-card">
+          <div className="cp-card" data-tour="retro">
             <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
               <ClipboardList size={14} color="var(--sage)" />
               <span style={{ fontSize: 13, fontWeight: 500 }}>Retroalimentación y tareas</span>
@@ -2196,7 +2356,7 @@ function EstudianteView({ data, studentPortalId, setStudentPortalId, submitPayme
             )}
           </div>
 
-          <ConoceATuProfe data={data} />
+          <div data-tour="profe"><ConoceATuProfe data={data} /></div>
         </>
       )}
     </div>
