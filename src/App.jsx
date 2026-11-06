@@ -460,6 +460,23 @@ export default function CompasApp() {
     }));
   };
 
+  const rescheduleClass = (studentId, classId, newDate, newTime) => {
+    setData((d) => ({
+      ...d,
+      students: d.students.map((s) => {
+        if (s.id !== studentId) return s;
+        return {
+          ...s,
+          classes: s.classes.map((c) =>
+            c.id === classId
+              ? { ...c, date: newDate, time: newTime, flagReprogramar: false, reprogramadaDe: `${c.date} · ${c.time}`, reprogramaciones: (c.reprogramaciones || 0) + 1 }
+              : c
+          ),
+        };
+      }),
+    }));
+  };
+
   const toggleReprogramar = (studentId, classId) => {
     setData((d) => ({
       ...d,
@@ -612,6 +629,7 @@ export default function CompasApp() {
             updateClassFeedback={updateClassFeedback}
             updateStudentProfile={updateStudentProfile}
             toggleReprogramar={toggleReprogramar}
+            rescheduleClass={rescheduleClass}
             toggleTaskReviewed={toggleTaskReviewed}
             removeStudent={removeStudent}
             selectedStudentId={selectedStudentId}
@@ -645,7 +663,7 @@ export default function CompasApp() {
 const TEACHER_TOUR = [
   { title: "¡Te damos la bienvenida a Tempo! 🎵", text: "Te muestro en un minuto dónde está cada cosa. Puedes salir cuando quieras y volver a verlo con el botón ? de arriba." },
   { target: "mi-tempo", title: "Mi Tempo de hoy", text: "Tu resumen del día: clases, pagos pendientes, cumpleaños y acciones recomendadas. Es lo primero que ves al abrir la app." },
-  { target: "agenda", title: "Tu agenda", text: "Aquí ves las clases de hoy y de la semana. Con “Completar y agregar retro” se descuenta el crédito y dejas bitácora, retroalimentación y tareas. En los tres puntitos puedes cancelar, marcar ausencia o reprogramar." },
+  { target: "agenda", title: "Tu agenda", text: "Aquí ves las clases de hoy y de la semana. Con “Completar y agregar retro” se descuenta el crédito y dejas bitácora, retroalimentación y tareas. En los tres puntitos puedes cancelar, marcar ausencia o reprogramar la clase a otro día u hora sin gastar crédito." },
   { target: "reportes", title: "Balance e ingresos", text: "Mira cuánto ingresas mes a mes (los últimos 6) y exporta tus clases en CSV. El balance del mes empieza en $0 cada día 1." },
   { target: "perfil", title: "Tu perfil", text: "Completa tu reseña, contacto y redes, y agrega lo que enseñas (piano, flauta, teoría…). Tus estudiantes lo ven en “Conoce a tu profe”." },
   { target: "paquetes", title: "Tus paquetes de crédito", text: "Por aquí subes los paquetes de tus clases, con su precio, créditos y vigencia. Los 4 que ves son solo una sugerencia: edítalos, bórralos o crea los tuyos." },
@@ -957,6 +975,7 @@ function ProfesorView(props) {
         cancelClass={props.cancelClass}
         markAbsence={props.markAbsence}
         toggleReprogramar={props.toggleReprogramar}
+        rescheduleClass={props.rescheduleClass}
         setSelectedStudentId={setSelectedStudentId}
       /></div>
       <Analitica data={data} />
@@ -998,6 +1017,7 @@ function ProfesorView(props) {
           updateClassFeedback={props.updateClassFeedback}
           updateStudentProfile={props.updateStudentProfile}
           toggleReprogramar={props.toggleReprogramar}
+        rescheduleClass={props.rescheduleClass}
           toggleTaskReviewed={props.toggleTaskReviewed}
         />
       )}
@@ -1087,7 +1107,7 @@ function MiTempoHoyProfesor({ data, setSelectedStudentId }) {
   );
 }
 
-function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId }) {
+function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleReprogramar, rescheduleClass, setSelectedStudentId }) {
   const [modo, setModo] = useState("hoy");
   const [completingKey, setCompletingKey] = useState(null);
   const [feedback, setFeedback] = useState("");
@@ -1122,7 +1142,7 @@ function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleRep
     if (completadasConBitacora[0]) lastBitacoraByStudent[s.id] = completadasConBitacora[0].bitacora;
   });
 
-  const itemProps = { completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, bitacora, setBitacora, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId, lastBitacoraByStudent };
+  const itemProps = { completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, bitacora, setBitacora, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, rescheduleClass, setSelectedStudentId, lastBitacoraByStudent };
 
   return (
     <div className="cp-card" style={{ borderColor: "var(--brass)" }}>
@@ -1168,8 +1188,11 @@ function AgendaDiaria({ data, completeClass, cancelClass, markAbsence, toggleRep
   );
 }
 
-function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, bitacora, setBitacora, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, setSelectedStudentId, lastBitacoraByStudent }) {
+function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback, tasks, setTasks, bitacora, setBitacora, openMenuKey, setOpenMenuKey, completeClass, cancelClass, markAbsence, toggleReprogramar, rescheduleClass, setSelectedStudentId, lastBitacoraByStudent }) {
   const key = c.id;
+  const [reprog, setReprog] = useState(false);
+  const [newDate, setNewDate] = useState("");
+  const [newTime, setNewTime] = useState("");
   return (
     <div style={{ border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px" }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
@@ -1181,6 +1204,11 @@ function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback,
           >
             {c.studentName}
           </span>
+          {c.reprogramadaDe && (
+            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, color: "var(--brass-dark)", background: "var(--soft-bg)", padding: "1px 7px", borderRadius: 999 }}>
+              Reprogramada · antes {c.reprogramadaDe}
+            </span>
+          )}
         </div>
         <div style={{ display: "flex", gap: 6, position: "relative" }}>
           <button className="cp-btn cp-btn-primary" style={{ padding: "5px 10px", fontSize: 12 }} onClick={() => setCompletingKey(completingKey === key ? null : key)}>
@@ -1215,15 +1243,41 @@ function AgendaItem({ c, completingKey, setCompletingKey, feedback, setFeedback,
                 Marcar ausencia
               </button>
               <button
-                style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", fontSize: 12, border: "none", background: "none", cursor: "pointer", color: c.flagReprogramar ? "var(--brass-dark)" : "var(--ink)" }}
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", fontSize: 12, border: "none", background: "none", cursor: "pointer", color: "var(--ink)", fontWeight: 600 }}
+                onClick={() => { setReprog(true); setNewDate(c.date); setNewTime(c.time); setOpenMenuKey(null); }}
+              >
+                Reprogramar…
+              </button>
+              <button
+                style={{ display: "block", width: "100%", textAlign: "left", padding: "8px 12px", fontSize: 12, border: "none", background: "none", cursor: "pointer", color: c.flagReprogramar ? "var(--brass-dark)" : "var(--muted)" }}
                 onClick={() => { toggleReprogramar(c.studentId, c.id); setOpenMenuKey(null); }}
               >
-                {c.flagReprogramar ? "Reprogramar ✓" : "Reprogramar"}
+                {c.flagReprogramar ? "Por reprogramar ✓" : "Reprogramar más tarde"}
               </button>
             </div>
           )}
         </div>
       </div>
+      {reprog && (
+        <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+          <div className="cp-label">Nueva fecha y hora (no se descuenta crédito)</div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input className="cp-input" type="date" value={newDate} onChange={(e) => setNewDate(e.target.value)} />
+            <input className="cp-input" type="time" value={newTime} onChange={(e) => setNewTime(e.target.value)} />
+          </div>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              className="cp-btn cp-btn-primary"
+              style={{ flex: 1 }}
+              disabled={!newDate || !newTime}
+              onClick={() => { rescheduleClass(c.studentId, c.id, newDate, newTime); setReprog(false); }}
+            >
+              Guardar nueva fecha
+            </button>
+            <button className="cp-btn" onClick={() => setReprog(false)}>Cancelar</button>
+          </div>
+        </div>
+      )}
       {completingKey === key && (
         <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
           {lastBitacoraByStudent?.[c.studentId] && (
@@ -1830,7 +1884,10 @@ function RepertorioEstudiante({ student, updateStudentProfile }) {
   );
 }
 
-function StudentDetail({ student, packages, subjects, rechargeStudent, scheduleClass, scheduleRecurringClasses, completeClass, cancelClass, updateClassFeedback, updateStudentProfile, toggleReprogramar, toggleTaskReviewed }) {
+function StudentDetail({ student, packages, subjects, rechargeStudent, scheduleClass, scheduleRecurringClasses, completeClass, cancelClass, updateClassFeedback, updateStudentProfile, toggleReprogramar, rescheduleClass, toggleTaskReviewed }) {
+  const [reschedulingId, setReschedulingId] = useState(null);
+  const [rsDate, setRsDate] = useState("");
+  const [rsTime, setRsTime] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
   const [repeatWeekly, setRepeatWeekly] = useState(false);
@@ -2000,14 +2057,47 @@ function StudentDetail({ student, packages, subjects, rechargeStudent, scheduleC
             {pendientes.map((c) => (
               <div key={c.id} style={{ border: "1px solid var(--line)", borderRadius: 8, padding: "8px 10px", marginBottom: 6, fontSize: 12 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                  <span>{c.date} · {c.time}</span>
-                  <div style={{ display: "flex", gap: 6 }}>
+                  <span>
+                    {c.date} · {c.time}
+                    {c.reprogramadaDe && (
+                      <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 600, color: "var(--brass-dark)", background: "var(--soft-bg)", padding: "1px 7px", borderRadius: 999 }}>
+                        Reprogramada · antes {c.reprogramadaDe}
+                      </span>
+                    )}
+                  </span>
+                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
                     <button className="cp-btn cp-btn-primary" style={{ padding: "4px 10px", fontSize: 12 }} onClick={() => setCompletingId(completingId === c.id ? null : c.id)}>
                       Completar y agregar retro
+                    </button>
+                    <button
+                      className="cp-btn"
+                      style={{ padding: "4px 10px", fontSize: 12 }}
+                      onClick={() => {
+                        if (reschedulingId === c.id) { setReschedulingId(null); return; }
+                        setReschedulingId(c.id); setRsDate(c.date); setRsTime(c.time);
+                      }}
+                    >
+                      Reprogramar
                     </button>
                     <button className="cp-btn" style={{ padding: "4px 8px" }} onClick={() => cancelClass(student.id, c.id)} aria-label="Cancelar clase"><X size={12} /></button>
                   </div>
                 </div>
+                {reschedulingId === c.id && (
+                  <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div className="cp-label">Nueva fecha y hora (no se descuenta crédito)</div>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <input className="cp-input" type="date" value={rsDate} onChange={(e) => setRsDate(e.target.value)} />
+                      <input className="cp-input" type="time" value={rsTime} onChange={(e) => setRsTime(e.target.value)} />
+                    </div>
+                    <button
+                      className="cp-btn cp-btn-primary"
+                      disabled={!rsDate || !rsTime}
+                      onClick={() => { rescheduleClass(student.id, c.id, rsDate, rsTime); setReschedulingId(null); }}
+                    >
+                      Guardar nueva fecha
+                    </button>
+                  </div>
+                )}
                 {completingId === c.id && (
                   <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
                     {ultimaBitacora && (
@@ -2333,7 +2423,10 @@ function EstudianteView({ data, studentPortalId, setStudentPortalId, submitPayme
               <div style={{ fontSize: 12, color: "var(--muted-light)" }}>No tienes clases programadas.</div>
             ) : (
               student.classes.filter((c) => c.status === "programada").map((c) => (
-                <div key={c.id} style={{ fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--line)" }}>{c.date} · {c.time}</div>
+                <div key={c.id} style={{ fontSize: 13, padding: "6px 0", borderTop: "1px solid var(--line)" }}>
+                  {c.date} · {c.time}
+                  {c.reprogramadaDe && <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 600, color: "var(--brass-dark)", background: "var(--soft-bg)", padding: "1px 7px", borderRadius: 999 }}>Reprogramada</span>}
+                </div>
               ))
             )}
           </div>
