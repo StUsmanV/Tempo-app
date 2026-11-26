@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from "react";
 import { Music, Plus, Calendar, User, Wallet, ClipboardList, BarChart3, AlertTriangle, Check, X, RefreshCw, ChevronDown, ChevronRight, Trash2, MoreVertical, Sun, Moon, Download, MessageCircle, Repeat, LogOut, HelpCircle } from "lucide-react";
 import { supabase } from "./supabaseClient";
-import Auth from "./Auth";
+import Auth, { LinkAccount } from "./Auth";
 
 const DEFAULT_PACKAGES = [
   { id: "individual", name: "Clase individual", credits: 1, validityDays: 30, price: 60000 },
@@ -116,6 +116,7 @@ function rowToTeacherFields(row) {
     darkMode: row.dark_mode || false,
     subjects: row.subjects || [],
     incomeLog: row.income_log || [],
+    inviteCode: row.invite_code || "",
     teacherProfile: { ...EMPTY_TEACHER_PROFILE, ...(row.teacher_profile || {}), social: { ...EMPTY_TEACHER_PROFILE.social, ...((row.teacher_profile || {}).social || {}) } },
   };
 }
@@ -129,6 +130,7 @@ function teacherFieldsToRow(data) {
     dark_mode: data.darkMode,
     subjects: data.subjects,
     income_log: data.incomeLog || [],
+    ...(data.inviteCode ? { invite_code: data.inviteCode } : {}),
     teacher_profile: data.teacherProfile,
   };
 }
@@ -144,6 +146,8 @@ export default function CompasApp() {
   const [studentPortalId, setStudentPortalId] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
+  const [needsLink, setNeedsLink] = useState(false); // sesión iniciada pero sin docente/perfil conectado
+  const [reloadKey, setReloadKey] = useState(0);
   const saveTimer = useRef(null);
   const prevStudentIdsRef = useRef([]);
   const skipNextSaveRef = useRef(false);
@@ -162,11 +166,12 @@ export default function CompasApp() {
 
   // --- Averiguar el rol y cargar los datos correspondientes ---
   useEffect(() => {
-    if (!session) return;
+    if (!session) { setNeedsLink(false); return; }
     let cancelled = false;
 
     (async () => {
       setLoaded(false);
+      setNeedsLink(false);
       const userId = session.user.id;
 
       const { data: teacherRow } = await supabase.from("teachers").select("*").eq("id", userId).maybeSingle();
@@ -190,19 +195,22 @@ export default function CompasApp() {
         setRole("estudiante");
         setTeacherId(studentRow.teacher_id);
         setMyStudentRowId(studentRow.id);
-        const { data: teacherRow2 } = await supabase.from("teachers").select("*").eq("id", studentRow.teacher_id).maybeSingle();
+        const { data: teacherInfo } = await supabase.rpc("get_my_teacher");
         if (cancelled) return;
         prevStudentIdsRef.current = [studentRow.id];
         skipNextSaveRef.current = true;
-        setData({ ...rowToTeacherFields(teacherRow2 || {}), students: [rowToStudent(studentRow)] });
+        setData({ ...rowToTeacherFields(teacherInfo || {}), students: [rowToStudent(studentRow)] });
         setStudentPortalId(studentRow.id);
         setView("estudiante");
         setLoaded(true);
+        return;
       }
+
+      if (!cancelled) setNeedsLink(true);
     })();
 
     return () => { cancelled = true; };
-  }, [session]);
+  }, [session, reloadKey]);
 
   // --- Suscripción en tiempo real ---
   useEffect(() => {
@@ -227,14 +235,16 @@ export default function CompasApp() {
       setData((d) => (d ? { ...d, students: (rows || []).map(rowToStudent) } : d));
     } else if (myStudentRowId) {
       const { data: row } = await supabase.from("students").select("*").eq("id", myStudentRowId).maybeSingle();
+      const { data: teacherInfo } = await supabase.rpc("get_my_teacher");
       if (row) {
         skipNextSaveRef.current = true;
-        setData((d) => (d ? { ...d, students: [rowToStudent(row)] } : d));
+        setData((d) => (d ? { ...d, ...(teacherInfo ? { ...rowToTeacherFields(teacherInfo), darkMode: d.darkMode } : {}), students: [rowToStudent(row)] } : d));
       }
     }
   };
 
   const refetchTeacher = async () => {
+    if (role !== "profesor") return; // los estudiantes reciben los datos del docente por get_my_teacher
     const { data: row } = await supabase.from("teachers").select("*").eq("id", teacherId).maybeSingle();
     if (row) {
       skipNextSaveRef.current = true;
@@ -311,7 +321,11 @@ export default function CompasApp() {
   }
 
   if (!session) {
-    return <Auth onAuthed={() => {}} />;
+    return <Auth onAuthed={() => setReloadKey((k) => k + 1)} />;
+  }
+
+  if (needsLink) {
+    return <LinkAccount onLinked={() => setReloadKey((k) => k + 1)} onLogout={() => supabase.auth.signOut()} />;
   }
 
   if (!loaded || !data) {
@@ -391,6 +405,13 @@ export default function CompasApp() {
       ...d,
       students: d.students.map((s) => (s.id === studentId ? { ...s, ...patch } : s)),
     }));
+  };
+
+  const regenerateInviteCode = () => {
+    const bytes = new Uint8Array(4);
+    crypto.getRandomValues(bytes);
+    const code = Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("").toUpperCase();
+    setData((d) => ({ ...d, inviteCode: code }));
   };
 
   const logIncome = (d, studentId, studentName, amount, method) => ({
@@ -630,6 +651,7 @@ export default function CompasApp() {
             updateStudentProfile={updateStudentProfile}
             toggleReprogramar={toggleReprogramar}
             rescheduleClass={rescheduleClass}
+            regenerateInviteCode={regenerateInviteCode}
             toggleTaskReviewed={toggleTaskReviewed}
             removeStudent={removeStudent}
             selectedStudentId={selectedStudentId}
@@ -668,7 +690,8 @@ const TEACHER_TOUR = [
   { target: "perfil", title: "Tu perfil", text: "Completa tu reseña, contacto y redes, y agrega lo que enseñas (piano, flauta, teoría…). Tus estudiantes lo ven en “Conoce a tu profe”." },
   { target: "paquetes", title: "Tus paquetes de crédito", text: "Por aquí subes los paquetes de tus clases, con su precio, créditos y vigencia. Los 4 que ves son solo una sugerencia: edítalos, bórralos o crea los tuyos." },
   { target: "cobro", title: "Cobro con QR", text: "Sube tu QR e instrucciones de pago. Cuando un estudiante envíe su comprobante, aparece aquí para que lo apruebes y se recarguen sus créditos." },
-  { target: "estudiantes", title: "Tus estudiantes", text: "Agrégalos con su nombre y paquete; después ellos crean su cuenta y eligen su nombre en tu lista. Toca una tarjeta para agendar clases, ver su historial y llevar su perfil." },
+  { target: "codigo", title: "Tu código de docente", text: "Envía este código a tus estudiantes. Al crear su cuenta lo pegan y quedan conectados contigo. Antes, agrégalos por nombre en “Tus estudiantes”." },
+  { target: "estudiantes", title: "Tus estudiantes", text: "Agrégalos con su nombre y paquete; después ellos crean su cuenta, pegan tu código y eligen su nombre. Toca una tarjeta para agendar clases, ver su historial y llevar su perfil." },
   { target: "vista-toggle", title: "Mira lo que ve tu estudiante", text: "Cambia a “Vista estudiante” para ver la app tal como la ve cada uno de tus estudiantes." },
   { title: "¡Listo, a darle! 🎶", text: "Puedes repetir este recorrido cuando quieras con el botón ? de arriba." },
 ];
@@ -997,6 +1020,7 @@ function ProfesorView(props) {
         rejectPaymentRequest={props.rejectPaymentRequest}
         setSelectedStudentId={setSelectedStudentId}
       /></div>
+      <div data-tour="codigo"><CodigoDocente code={data.inviteCode} onRegenerate={props.regenerateInviteCode} /></div>
       <div data-tour="estudiantes"><Estudiantes
         data={data}
         addStudent={props.addStudent}
@@ -1608,6 +1632,52 @@ function Reportes({ data }) {
             )}
           </div>
         </div>
+      )}
+    </div>
+  );
+}
+
+function CodigoDocente({ code, onRegenerate }) {
+  const [copied, setCopied] = useState("");
+
+  const copy = async (text, which) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(which);
+      setTimeout(() => setCopied(""), 2000);
+    } catch (e) {}
+  };
+
+  const invitacion = `¡Hola! Te invito a Tempo, la app donde llevamos nuestras clases. 1) Entra a ${window.location.origin} 2) Toca "Crear cuenta" y elige "Estudiante" 3) Pega mi código de docente: ${code} (antes avísame para agregarte con tu nombre).`;
+
+  return (
+    <div className="cp-card">
+      <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+        <User size={16} color="var(--sage)" />
+        <span style={{ fontFamily: "var(--font-display)", fontSize: 16, fontWeight: 600 }}>Tu código de docente</span>
+      </div>
+      {!code ? (
+        <div style={{ fontSize: 12, color: "var(--muted-light)" }}>Tu código aún no está disponible. Recarga la página en un momento.</div>
+      ) : (
+        <>
+          <div style={{ fontFamily: "var(--font-mono)", fontSize: 24, fontWeight: 600, letterSpacing: "0.12em", color: "var(--brass-dark)", marginBottom: 6 }}>{code}</div>
+          <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 12 }}>
+            Envíaselo a tus estudiantes. Al crear su cuenta lo pegan y quedan conectados contigo.
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+            <button className="cp-btn cp-btn-primary" onClick={() => copy(code, "code")}>{copied === "code" ? "¡Copiado!" : "Copiar código"}</button>
+            <button className="cp-btn" onClick={() => copy(invitacion, "invite")}>{copied === "invite" ? "¡Copiado!" : "Copiar mensaje de invitación"}</button>
+            <button
+              className="cp-btn"
+              style={{ color: "var(--muted)" }}
+              onClick={() => {
+                if (window.confirm("Si generas un código nuevo, el anterior deja de funcionar para estudiantes nuevos. Los estudiantes que ya están conectados no se afectan. ¿Continuar?")) onRegenerate();
+              }}
+            >
+              Generar código nuevo
+            </button>
+          </div>
+        </>
       )}
     </div>
   );
